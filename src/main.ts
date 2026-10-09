@@ -1,0 +1,224 @@
+import "./style.css";
+import {
+  CONFIG,
+  crearEstadoInicial,
+  iniciarNuevaPartida,
+  seleccionarCasilla,
+} from "./logica";
+
+const raiz = document.querySelector<HTMLDivElement>("#app");
+
+if (!raiz) {
+  throw new Error("No se encontró el contenedor principal del juego.");
+}
+
+const estado = crearEstadoInicial();
+let casillaEnfocada = 0;
+let indicesDestello: number[] = [];
+let lineaGanadora: number[] = [];
+
+raiz.innerHTML = `
+  <main class="juego">
+    <header class="encabezado">
+      <p class="sobre-titulo">UN CLÁSICO CON UN GIRO</p>
+      <h1>Tres en Raya <span>Cuántico</span></h1>
+      <p class="introduccion">Elegí dos casillas por turno y encontrá tu línea ganadora.</p>
+    </header>
+
+    <section class="marcador" aria-label="Puntaje de la partida">
+      <div class="jugador jugador-x" id="marcador-x"></div>
+      <div class="separador" aria-hidden="true">:</div>
+      <div class="jugador jugador-o" id="marcador-o"></div>
+    </section>
+
+    <section class="partida" aria-label="Partida">
+      <p class="estado-partida" id="estado-partida" aria-live="polite"></p>
+      <div class="tablero-marco" id="tablero-marco">
+        <div class="tablero" id="tablero" role="group" aria-label="Tablero de tres por tres"></div>
+        <svg class="rayo-victoria" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="gradiente-rayo" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#00E5FF" />
+              <stop offset="50%" stop-color="#000000" />
+              <stop offset="100%" stop-color="#FF83B5" />
+            </linearGradient>
+          </defs>
+          <line id="rayo-ganador" x1="0" y1="0" x2="0" y2="0" />
+        </svg>
+      </div>
+      <p class="ayuda-teclado">Movete con las flechas y elegí con Enter</p>
+      <button class="boton-nueva" id="boton-nueva" type="button">Nueva partida</button>
+    </section>
+
+    <footer class="leyenda" aria-label="Jugadores">
+      <span><i class="punto punto-x" aria-hidden="true"></i>Jugador X</span>
+      <span><i class="punto punto-o" aria-hidden="true"></i>Jugador O</span>
+    </footer>
+  </main>
+`;
+
+const tablero = raiz.querySelector<HTMLDivElement>("#tablero")!;
+const mensaje = raiz.querySelector<HTMLParagraphElement>("#estado-partida")!;
+const marcadorX = raiz.querySelector<HTMLDivElement>("#marcador-x")!;
+const marcadorO = raiz.querySelector<HTMLDivElement>("#marcador-o")!;
+const botonNueva = raiz.querySelector<HTMLButtonElement>("#boton-nueva")!;
+
+function actualizarInterfaz(restaurarFoco = false): void {
+  marcadorX.innerHTML = `<span class="simbolo">X</span><span class="datos-jugador"><strong>Jugador X</strong><small>${estado.puntos.X} ${estado.puntos.X === 1 ? "punto" : "puntos"}</small></span>`;
+  marcadorO.innerHTML = `<span class="simbolo">O</span><span class="datos-jugador"><strong>Jugador O</strong><small>${estado.puntos.O} ${estado.puntos.O === 1 ? "punto" : "puntos"}</small></span>`;
+  marcadorX.classList.toggle("activo", estado.resultado === "en-curso" && estado.turnoActual === "X");
+  marcadorO.classList.toggle("activo", estado.resultado === "en-curso" && estado.turnoActual === "O");
+
+  if (estado.resultado === "victoria") {
+    mensaje.textContent = `¡Gana el jugador ${estado.ganador}!`;
+    mensaje.className = "estado-partida resultado";
+  } else if (estado.resultado === "empate") {
+    mensaje.textContent = "¡Empate! No quedan movimientos posibles.";
+    mensaje.className = "estado-partida resultado";
+  } else {
+    const cantidadPendiente = estado.marcasPendientes.length;
+    mensaje.textContent = `Turno del jugador ${estado.turnoActual} · Elegí ${cantidadPendiente === 0 ? "2 casillas" : "1 casilla más"}`;
+    mensaje.className = "estado-partida";
+  }
+
+  tablero.innerHTML = estado.tablero
+    .map((jugador, indice) => {
+      const pendiente = estado.marcasPendientes.includes(indice);
+      const marca = jugador ?? (pendiente ? estado.turnoActual : "");
+      const clases = [
+        "casilla",
+        marca ? `marca-${marca.toLowerCase()}` : "",
+        pendiente ? "pendiente" : "",
+        indicesDestello.includes(indice) ? "destello-cuantico" : "",
+        lineaGanadora.includes(indice) ? "casilla-ganadora" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const descripcion = jugador
+        ? `Casilla ${indice + 1}, jugador ${jugador}`
+        : pendiente
+          ? `Casilla ${indice + 1}, marca doble pendiente del jugador ${estado.turnoActual}`
+          : `Casilla ${indice + 1}, vacía`;
+
+      return `<button class="${clases}" type="button" data-indice="${indice}" aria-label="${descripcion}" aria-pressed="${pendiente}" ${estado.resultado !== "en-curso" ? "disabled" : ""}>${marca ? `<span aria-hidden="true">${marca}</span>` : ""}${pendiente ? '<small class="etiqueta-pendiente">DOBLE</small>' : ""}</button>`;
+    })
+    .join("");
+
+  if (estado.resultado === "victoria") {
+    requestAnimationFrame(dibujarRayoGanador);
+  } else {
+    const rayo = raiz?.querySelector<SVGLineElement>("#rayo-ganador");
+    if (rayo) {
+      rayo.setAttribute("x1", "0");
+      rayo.setAttribute("y1", "0");
+      rayo.setAttribute("x2", "0");
+      rayo.setAttribute("y2", "0");
+    }
+  }
+
+  if (restaurarFoco) {
+    tablero.querySelector<HTMLButtonElement>(`[data-indice="${casillaEnfocada}"]`)?.focus();
+  }
+}
+
+function dibujarRayoGanador(): void {
+  if (lineaGanadora.length !== 3) return;
+
+  const marco = raiz?.querySelector<HTMLDivElement>("#tablero-marco");
+  const rayo = raiz?.querySelector<SVGLineElement>("#rayo-ganador");
+  if (!marco || !rayo) return;
+
+  const limitesMarco = marco.getBoundingClientRect();
+  const centros = lineaGanadora.map((indice) => {
+    const casilla = tablero.querySelector<HTMLButtonElement>(`[data-indice="${indice}"]`);
+    if (!casilla) return null;
+    const limites = casilla.getBoundingClientRect();
+    return {
+      x: limites.left + limites.width / 2 - limitesMarco.left,
+      y: limites.top + limites.height / 2 - limitesMarco.top,
+    };
+  });
+
+  const inicio = centros[0];
+  const fin = centros[2];
+  if (!inicio || !fin) return;
+
+  rayo.setAttribute("x1", String(inicio.x));
+  rayo.setAttribute("y1", String(inicio.y));
+  rayo.setAttribute("x2", String(fin.x));
+  rayo.setAttribute("y2", String(fin.y));
+}
+
+tablero.addEventListener("click", (evento: MouseEvent) => {
+  const objetivo = evento.target;
+  if (!(objetivo instanceof Element)) return;
+
+  const casilla = objetivo.closest<HTMLButtonElement>("[data-indice]");
+  if (!casilla) return;
+
+  casillaEnfocada = Number(casilla.dataset.indice);
+  const seleccionActual = [...estado.marcasPendientes, casillaEnfocada];
+  if (seleccionarCasilla(estado, casillaEnfocada)) {
+    indicesDestello = seleccionActual;
+    lineaGanadora = [];
+    if (estado.resultado === "victoria" && estado.ganador) {
+      const lineas = [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+        [0, 3, 6],
+        [1, 4, 7],
+        [2, 5, 8],
+        [0, 4, 8],
+        [2, 4, 6],
+      ];
+      lineaGanadora =
+        lineas.find((linea) => linea.every((indice) => estado.tablero[indice] === estado.ganador)) ?? [];
+    }
+    actualizarInterfaz(true);
+    window.setTimeout(() => {
+      indicesDestello = [];
+      actualizarInterfaz();
+    }, 850);
+  }
+});
+
+tablero.addEventListener("keydown", (evento: KeyboardEvent) => {
+  if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(evento.key)) return;
+
+  const objetivo = evento.target;
+  if (!(objetivo instanceof HTMLButtonElement)) return;
+
+  const indice = Number(objetivo.dataset.indice);
+  const fila = Math.floor(indice / CONFIG.columnas);
+  const columna = indice % CONFIG.columnas;
+  let siguienteIndice = indice;
+
+  if (evento.key === "ArrowUp" && fila > 0) siguienteIndice -= CONFIG.columnas;
+  if (evento.key === "ArrowDown" && fila < CONFIG.filas - 1) siguienteIndice += CONFIG.columnas;
+  if (evento.key === "ArrowLeft" && columna > 0) siguienteIndice -= 1;
+  if (evento.key === "ArrowRight" && columna < CONFIG.columnas - 1) siguienteIndice += 1;
+
+  if (siguienteIndice !== indice) {
+    evento.preventDefault();
+    casillaEnfocada = siguienteIndice;
+    tablero.querySelector<HTMLButtonElement>(`[data-indice="${siguienteIndice}"]`)?.focus();
+  }
+});
+
+botonNueva.addEventListener("click", () => {
+  iniciarNuevaPartida(estado);
+  casillaEnfocada = 0;
+  indicesDestello = [];
+  lineaGanadora = [];
+  actualizarInterfaz();
+  tablero.querySelector<HTMLButtonElement>('[data-indice="0"]')?.focus();
+});
+
+window.addEventListener("resize", () => {
+  if (estado.resultado === "victoria") {
+    dibujarRayoGanador();
+  }
+});
+
+actualizarInterfaz();
